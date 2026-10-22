@@ -25,8 +25,8 @@ using LiteMath::uint2;
 using LiteMath::uint3;
 using LiteMath::uint4;
 
-static constexpr int SCREEN_WIDTH  = 640;
-static constexpr int SCREEN_HEIGHT = 480;
+static constexpr int SCREEN_WIDTH  = 1280;
+static constexpr int SCREEN_HEIGHT = 960;
 
 float rad_to_deg(float rad) { return rad * 180.0f / LiteMath::M_PI; }
 
@@ -38,12 +38,80 @@ uint32_t float3_to_RGBA8(float3 c)
   return 0xFF000000 | (r<<16) | (g<<8) | b;
 }
 
+float sphere_SDF(float3 pos)
+{
+  constexpr float R = 3.0f;
+  //constexpr float r = 0.25f;
+
+  return length(pos - float3(0,0,0)) - R;
+}
+
+float torus_SDF(float3 pos)
+{
+  const float R = 4.0f;
+  const float r = 0.8f;
+
+  const float2 p2 = float2(LiteMath::length(float2(pos.x, pos.y)) - R, pos.z);
+  return length(p2) - r;
+}
+
+float combined_SDF(float3 pos)
+{
+  return std::min(torus_SDF(float3(pos.z, pos.x, pos.y)),std::min(torus_SDF(pos), torus_SDF(float3(pos.z, pos.y, pos.x))));
+}
+
+//p: SDF(p) = 0, n(p) = normalize(grad(SDF(p)))
+
 void draw_frame_example(const Camera &camera, std::vector<uint32_t> &pixels)
 {
+  const LiteMath::float4x4 view = LiteMath::lookAt(camera.pos, camera.target, camera.up);
+  const LiteMath::float4x4 proj = LiteMath::perspectiveMatrix((camera.fov_rad/LiteMath::M_PI)*360.0, (float)SCREEN_WIDTH/SCREEN_HEIGHT, camera.z_near, camera.z_far);
+  const LiteMath::float4x4 vp_inv = LiteMath::inverse4x4(proj * view);
+
+  const float3 light_dir = normalize(float3(-1,-1,-1));
+  const float3 light_color = float3(0.5, 0.5, 0.5);
+  const float3 ambient_color = float3(0.1, 0.1, 0.1);
+
   for (int i=0; i<SCREEN_HEIGHT; i++)
+  {
     for (int j=0; j<SCREEN_WIDTH; j++)
-      pixels[i*SCREEN_WIDTH + j] = (i/16 %2 == j/16 % 2) ? 0xFFFFFFFF : 0xFF000000; 
-  //torus_sphere_tracing_demo(camera, pixels.data(), SCREEN_WIDTH, SCREEN_HEIGHT);
+    {
+      const float4 point_NDC = float4(2.0*((j+0.5)/SCREEN_WIDTH)-1.0, 2.0*((i+0.5)/SCREEN_HEIGHT) - 1.0, 0, 1);
+      const float4 point_view = vp_inv * point_NDC;
+
+      const float3 ray_pos = camera.pos;
+      const float3 ray_dir = LiteMath::normalize(LiteMath::to_float3(point_view)/point_view.w - ray_pos);
+
+      //printf("[%d %d] pos %f %f %f dir %f %f %f\n", i, j, ray_pos.x, ray_pos.y, ray_pos.z, ray_dir.x, ray_dir.y, ray_dir.z);
+
+      int iters = 0;
+      float t = 0.0f;
+      float d = combined_SDF(ray_pos + t*ray_dir);
+
+      while (d > 1e-6f && iters < 1000 && d < 10)
+      {
+        t += d;
+        d = combined_SDF(ray_pos + t*ray_dir);
+        iters++;
+      }
+
+      if (d <= 1e-6f)
+      {
+        const float3 p0 = ray_pos + t*ray_dir;
+        const float dp = 1e-4f;
+        const float3 n = LiteMath::normalize(float3(combined_SDF(p0 + float3(dp, 0, 0)) - combined_SDF(p0 - float3(dp, 0, 0)),
+                                                    combined_SDF(p0 + float3(0, dp, 0)) - combined_SDF(p0 - float3(0, dp, 0)),
+                                                    combined_SDF(p0 + float3(0, 0, dp)) - combined_SDF(p0 - float3(0, 0, dp))));
+        const float3 albedo = float3(1,1,1);
+        const float3 color = albedo * (ambient_color + std::max(0.0f, -1.0f*dot(n, light_dir)));
+        pixels[(SCREEN_HEIGHT - i - 1)*SCREEN_WIDTH + j] = float3_to_RGBA8(color);
+      }
+      else
+      {
+        pixels[(SCREEN_HEIGHT - i - 1)*SCREEN_WIDTH + j] = 0xFF000000; 
+      }
+    }
+  }
 }
 
 // You must include the command line parameters for your main function to be recognized by SDL
@@ -150,6 +218,9 @@ int main(int argc, char **args)
 
     if (frameNum % 10 == 0)
       printf("Render time: %f ms\n", 1000.0f*dt);
+
+    const float rot_speed = 1.0f;
+    camera.pos = 7.0f*float3(sinf(rot_speed * time_from_start), 0, cosf(rot_speed * time_from_start));
 
     // Render the scene
     draw_frame_example(camera, pixels);
